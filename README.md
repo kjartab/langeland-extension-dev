@@ -47,5 +47,4 @@ TODO
   - LS_SplitSegment(linezm Geometry)
   - LS_SplitLinestring(linezm Geometry)
   - LS_GetLastUpdate(threshold numeric)
-  - 
   
