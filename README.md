@@ -1,4 +1,5 @@
 langeland-extension-dev
 =======================
 
-Extension to PostgreSQL
+Extension to PostgreSQL. Requires PostGIS
+
