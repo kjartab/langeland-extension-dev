@@ -192,7 +192,7 @@ $$ LANGUAGE plpgsql;
 --
 --
 --
---
+-- FUNCTION OK 
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -202,21 +202,21 @@ CREATE OR REPLACE FUNCTION LS_SegmentMeanTime(linezm Geometry) RETURNS numeric A
 DECLARE 
 
 n INTEGER;
-sum NUMERIC;
+timesum NUMERIC;
 line GEOMETRY;
 
 BEGIN
 
     SELECT INTO n ST_NPoints(linezm);
-    sum := 0;
+    timesum := 0;
 	SELECT INTO line ST_Force4D(linezm);
     FOR i in 1..n LOOP
 		
-    	sum := sum + ST_M(ST_PointN(line,i));
+    	timesum := timesum + ST_M(ST_PointN(line,i));
     	
     END LOOP;
 
-    RETURN sum/n;
+    RETURN timesum/n;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -225,13 +225,13 @@ $$ LANGUAGE plpgsql;
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 --
 --
---
+-- FUNCTION OK 
 --
 --
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION LS_NforLargestM(linezm GEOMETRY) RETURNS INTEGER AS $$
+CREATE OR REPLACE FUNCTION LS_NForMostRecent(linezm GEOMETRY) RETURNS INTEGER AS $$
 
 DECLARE 
 n INTEGER;
@@ -246,7 +246,6 @@ BEGIN
     max_m := ST_M(ST_PointN(linezm,1));
     latest_n := 1;
     
-	RAISE NOTICE ' max: % ', max_m;
     FOR i in 2..n LOOP
 	temp_m := ST_M(ST_PointN(linezm,i));
 	RAISE NOTICE ' % ', temp_m;
@@ -269,32 +268,26 @@ $$ LANGUAGE plpgsql;
 --
 --
 --
---
+-- FUNCTION OK 
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
-
-CREATE OR REPLACE FUNCTION LS_LargestM(linezm GEOMETRY) RETURNS INTEGER AS $$
+CREATE OR REPLACE FUNCTION LS_LargestM(linezm GEOMETRY) RETURNS NUMERIC AS $$
 
 DECLARE 
-n INTEGER;
-latest_n INTEGER;
 
 max_m NUMERIC;
 temp_m NUMERIC;
 
 BEGIN
-    n := ST_NPoints(linezm);
 
     max_m := ST_M(ST_PointN(linezm,1));
-    latest_n := 1;
     
-    FOR i in 2..n LOOP
+    FOR i in 1..ST_NPoints(linezm) LOOP
 	temp_m := ST_M(ST_PointN(linezm,i));
 	
 	IF max_m < temp_m THEN
 		max_m := temp_m;
-		latest_n := i;
 	END IF;
 	
     END LOOP;
@@ -310,7 +303,7 @@ $$ LANGUAGE plpgsql;
 --
 --
 --
---
+-- 
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -423,7 +416,6 @@ BEGIN
 
 		-- Find the new zero time to solve for --
 
-
 		-- LOOP through points until ok --
 		
 		WHILE i <= n LOOP
@@ -494,6 +486,16 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+--
+--
+--
+--
+--
+--
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+	-- CODE FOR UPDATING
 
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 --
@@ -504,6 +506,166 @@ $$ LANGUAGE plpgsql;
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
+
+CREATE OR REPLACE FUNCTION LS_UpdateTimeline(segment_id integer, linezm GEOMETRY, insertedTime numeric, insertedPoint GEOMETRY, bufferSize NUMERIC) RETURNS geometry AS $$
+
+DECLARE 
+
+line GEOMETRY;
+oldPoint GEOMETRY;
+most_recent_update NUMERIC;
+reversed INTEGER;
+nLastUpdate INTEGER;
+nInserted INTEGER;
+deltaTime NUMERIC;
+
+
+BEGIN
+
+	nLastUpdate := LS_NForMostRecent(linezm);
+	SELECT INTO most_recent_update ST_M(ST_PointN(linezm,nLastUpdate));
+	
+	IF insertTime - mostRecentUpdate < 21600 THEN 
+
+		line := LS_UpdateRecent(linezm, insertedTime, insertedPoint, bufferSize);
+				
+	ELSE -- Create a new geometry entry - store the old one in audit trail table
+	
+		INSERT INTO segment_history -- id, storedtime, createdtime
+		
+		UPDATE segment_table SET created = now();
+		
+		WITH oldsegment AS (SELECT * FROM temporaltracks WHERE id = segment_id)
+		 
+		INSERT INTO temporalsegment_history(segment_id, created, stored, temporalsegment) VALUES (segment_id, created, now(), temporalsegment) FROM oldsegment
+		
+		line := LS_UpdateTimelineAtPoint(linezm, insertedPoint, bufferSize, insertTime); -- No matter what, the line will be updated
+	
+	END IF;
+	
+	RETURN line;
+
+END;
+
+$$ LANGUAGE plpgsql;
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+/* 
+
+@linezm - the timeline 4D geometry
+@insertedTime - the time of the inserted position/point
+@insertedPoint - the inserted position/point
+@buffersize - the size of the radius for which timelines should be updated 
+
+The function takes in the insertedPoint, insertedTime and buffersize to update a timeline
+If the timeline was updated recently, the points between last update and the new one, will be updated as well. 
+Uses LS_UpdateTimelineAtPoint(...)
+
+*/
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+CREATE OR REPLACE FUNCTION LS_UpdateRecent(linezm GEOMETRY, insertedTime numeric, insertedPoint GEOMETRY, bufferSize NUMERIC) RETURNS geometry AS $$
+
+DECLARE 
+
+line GEOMETRY;
+oldPoint GEOMETRY;
+most_recent_update NUMERIC;
+reversed INTEGER;
+nLastUpdate INTEGER;
+nInserted INTEGER;
+deltaTime NUMERIC;
+
+
+BEGIN
+	
+		line := LS_UpdateTimelineAtPoint(linezm, insertedPoint, bufferSize, insertTime); -- No matter what, the line will be updated
+		nInserted := LS_NForMostRecent(line);
+		
+		IF insertTime - mostRecentUpdate < 300 THEN -- If the timeline was updated  less than 5 minutes ago, it will be updated as if the points between were all visited
+		
+			IF nInserted < nLastUpdate THEN
+				reversed := 1;
+			END IF;
+
+			deltatime := (insertTime - mostRecentUpdate) / (nNewUpdate-nLastUpdate);
+			
+			IF reversed THEN
+			
+				FOR i in nLastUpdate..nInserted LOOP
+					oldPoint := ST_PointN(line,i);
+					SELECT INTO line ST_SetPoint(line,i-1,ST_SetSRID(ST_MakePoint(ST_X(oldPoint),ST_Y(oldPoint),ST_Z(oldPoint),cast(insertTime - deltatime*(nInserted - i) as double precision)),ST_SRID(line)));
+				END LOOP;
+			
+			ELSE 
+			
+				FOR i in nLastUpdate..nInserted LOOP
+					oldPoint := ST_PointN(line,i);
+					SELECT INTO line ST_SetPoint(line,i-1,ST_SetSRID(ST_MakePoint(ST_X(oldPoint),ST_Y(oldPoint),ST_Z(oldPoint),cast(insertTime + deltatime*(i - nLastUpdate) as double precision)),ST_SRID(line)));
+				END LOOP;
+			
+			END IF;
+			
+			
+		END IF;
+
+END;
+
+$$ LANGUAGE plpgsql;
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+--
+--
+--
+--
+--
+--
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+CREATE OR REPLACE FUNCTION LS_UpdateOld(segment_id integer, linezm GEOMETRY, insertedTime numeric, insertedPoint GEOMETRY, bufferSize NUMERIC) RETURNS geometry AS $$
+
+DECLARE 
+
+line GEOMETRY;
+oldPoint GEOMETRY;
+most_recent_update NUMERIC;
+reversed INTEGER;
+nLastUpdate INTEGER;
+nInserted INTEGER;
+deltaTime NUMERIC;
+
+
+BEGIN
+	
+	
+	INSERT INTO segment_history -- id, storedtime, createdtime
+	
+	
+	
+	UPDATE segment_table SET created = now();
+	
+	line := LS_UpdateTimelineAtPoint(linezm, insertedPoint, bufferSize, insertTime); -- No matter what, the line will be updated
+
+END;
+
+$$ LANGUAGE plpgsql;
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+--
+--
+--
+--
+--
+--
+----------------------------------------------------------------------------------------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION LS_FillInTimeline(timeline TIMESTAMP, linezm GEOMETRY, nLastUpdate INTEGER, nNewUpdate INTEGER, inserttime TIMESTAMP) RETURNS geometry AS $$
 
@@ -520,7 +682,12 @@ reversed INTEGER;
 returnline GEOMETRY;
 
 BEGIN
-
+	-- Colour the part of the line which falls under the machine.. 8m radius
+	-- Figure out if this has been filled in the last x hours.
+	
+	-- difference = timeline - inserttime
+	-- if difference < threshold : Then 
+	
 	line := linezm;
 
 	reversed := 0;
@@ -571,6 +738,81 @@ $$ LANGUAGE plpgsql;
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
+CREATE OR REPLACE FUNCTION LS_FillInLine(linezm GEOMETRY, n1 INTEGER, n2 INTEGER, timevalue numeric) RETURNS geometry AS $$
+
+DECLARE 
+
+line GEOMETRY;
+oldpoint GEOMETRY;
+n INTEGER;
+
+BEGIN
+
+    SELECT INTO n ST_NPoints(linezm);
+    line := linezm;
+
+    FOR i in n1..n2 LOOP
+
+    	oldpoint := ST_PointN(line,i);
+    	
+	SELECT INTO line ST_SetPoint(line,i-1,ST_SetSRID(ST_MakePoint(ST_X(oldpoint),ST_Y(oldpoint),ST_Z(oldpoint),timevalue),ST_SRID(linezm)));
+
+    END LOOP;
+    
+    RETURN line;
+END;
+$$ LANGUAGE plpgsql;
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+--
+--
+--
+-- Updates the temporal part of a line at a given point with a given timestamp and
+-- 
+--
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+CREATE OR REPLACE FUNCTION LS_UpdateTimelineAtPoint(linezm GEOMETRY, point GEOMETRY, buffer numeric, timevalue numeric) RETURNS geometry AS $$
+
+DECLARE 
+
+line GEOMETRY;
+oldpoint GEOMETRY;
+n INTEGER;
+
+BEGIN
+
+
+    line := linezm;
+    FOR i in 1..ST_NPoints(linezm) LOOP
+    
+	oldpoint := ST_PointN(linezm,i);
+	
+	IF ST_Distance(oldpoint, point) < buffer THEN	
+		SELECT INTO line ST_SetPoint(line,i-1,ST_SetSRID(ST_MakePoint(ST_X(oldpoint),ST_Y(oldpoint),ST_Z(oldpoint),timevalue),ST_SRID(linezm)));
+	END IF;
+
+    END LOOP;
+    
+    RETURN line;
+END;
+
+$$ LANGUAGE plpgsql;
+
+
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+--
+--
+--
+--
+--
+--
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
 CREATE OR REPLACE FUNCTION LS_FillInLine(linezm GEOMETRY, n1 INTEGER, n2 INTEGER, nvalue numeric) RETURNS geometry AS $$
 
 DECLARE 
@@ -607,63 +849,26 @@ $$ LANGUAGE plpgsql;
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION LS_FillInLine(linezm GEOMETRY, n1 INTEGER, n2 INTEGER, nvalue numeric) RETURNS geometry AS $$
+
+CREATE OR REPLACE FUNCTION LS_BuildTimeline(linezm GEOMETRY, inserttime TIMESTAMP WITH TIME ZONE) RETURNS geometry AS $$
 
 DECLARE 
 
 line GEOMETRY;
-oldpoint GEOMETRY;
+tempPoint GEOMETRY;
 n INTEGER;
-
-BEGIN
-
-    SELECT INTO n ST_NPoints(linezm);
-    line := linezm;
-
-    FOR i in n1..n2 LOOP
-
-    	oldpoint := ST_PointN(line,i);
-    	
-	SELECT INTO line ST_SetPoint(line,i-1,ST_SetSRID(ST_MakePoint(ST_X(oldpoint),ST_Y(oldpoint),ST_Z(oldpoint),nvalue),ST_SRID(linezm)));
-
-    END LOOP;
-    
-    RETURN line;
-END;
-$$ LANGUAGE plpgsql;
-
-
-
-----------------------------------------------------------------------------------------------------------------------------------------------------------
---
---
---
---
---
---
-----------------------------------------------------------------------------------------------------------------------------------------------------------
-
-CREATE OR REPLACE FUNCTION LS_BuildTimeline(linezm GEOMETRY, inserttime TIMESTAMP) RETURNS geometry AS $$
-
-DECLARE 
-
-line GEOMETRY;
-oldpoint GEOMETRY;
-n INTEGER;
-
 
 BEGIN
 
     SELECT INTO line ST_Force4D(linezm);
-	
+	INSERT INTO timeMillis EXTRACT(EPOCH FROM inserttime);
 	SELECT INTO n ST_NPoints(linezm);
-
 	
     FOR i in 1..n LOOP
 		
-    	oldpoint := ST_PointN(line,i);
+    	tempPoint := ST_PointN(line,i);
 		
-		SELECT INTO line ST_SetPoint(line,i-1,ST_SetSRID(ST_MakePoint(ST_X(oldpoint),ST_Y(oldpoint),ST_Z(oldpoint),0),ST_SRID(linezm)));
+		SELECT INTO line ST_SetPoint(line,i-1,ST_SetSRID(ST_MakePoint(ST_X(tempPoint),ST_Y(tempPoint),ST_Z(tempPoint),timeMillis),ST_SRID(linezm)));
 	
     END LOOP;
     
@@ -672,7 +877,6 @@ BEGIN
 END;
 
 $$ LANGUAGE plpgsql;
-
 
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 --
@@ -692,7 +896,6 @@ oldpoint GEOMETRY;
 n INTEGER;
 timediff NUMERIC;
 
-		
 BEGIN
 
     line := linezm;

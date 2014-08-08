@@ -1,4 +1,4 @@
 # langeland extension
-comment = 'An extension to PostGIS for handling and storing spatiotemporal data types'
+comment = 'An extension to PostGIS for handling and storing 4th dimension of geometries as time'
 default_version = '0.1'
 relocatable = true
