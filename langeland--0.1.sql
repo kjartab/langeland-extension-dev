@@ -132,34 +132,36 @@ $$ LANGUAGE plpgsql;
 --
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
+-- LS_UpdatedPortion
 
-CREATE OR REPLACE FUNCTION LS_UpdatedPortion(linezm GEOMETRY) RETURNS numeric AS $$
+
+CREATE OR REPLACE FUNCTION LS_UpdatedPortion(linezm GEOMETRY, referenceTime TIMESTAMP WITH TIME ZONE) RETURNS numeric AS $$
 
 DECLARE 
 
 n INTEGER;
 pluses NUMERIC;
 portion NUMERIC;
+referenceTimestamp  NUMERIC;
 
 BEGIN
-
+	
     SELECT INTO n ST_NPoints(linezm);
     pluses := 0; 
-    
+    SELECT INTO referenceTimestamp EXTRACT(EPOCH FROM referenceTime);
+	
+	
     FOR i in 1..n LOOP
 		
-	IF ST_M(ST_PointN(linezm,i) > -1 THEN
+	IF abs(ST_M(ST_PointN(linezm,i)) - referenceTime) > 3600 THEN
 		pluses := pluses + 1;
 	END IF;
     	
     END LOOP;	
     
-    RETURN pluses/n;
+    RETURN 1.0*pluses/n;
 END;
 $$ LANGUAGE plpgsql;
-
-
-
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 --
 --
@@ -174,27 +176,105 @@ $$ LANGUAGE plpgsql;
 
 
 
-CREATE OR REPLACE FUNCTION LS_SplitLinestring(linezm GEOMETRY, session_timestart TIMESTAMP) RETURNS SETOF subsegment_holder AS $$
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+--
+--
+--
+-- 
+--
+--
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+-- LS_SplitTimeline
+
+DROP TYPE SEGMENTHOLDER;
+CREATE TYPE SEGMENTHOLDER AS (id INTEGER, sid INTEGER, segmenttime TIMESTAMP, segment_linezm GEOMETRY);
+
+CREATE OR REPLACE FUNCTION LS_SplitTimeline(segment_id INTEGER, linezm GEOMETRY) RETURNS SETOF SEGMENTHOLDER AS $$
 
 DECLARE 
-r subsegment_holder%ROWTYPE;
+r SEGMENTHOLDER%ROWTYPE;
 n INTEGER;
-temp NUMERIC;
-
+counter INTEGER;
+nStart INTEGER;
+nStop INTEGER;
+timeSum NUMERIC;
+threshold NUMERIC;
+lastTimestamp NUMERIC;
+avgTime NUMERIC;
+i INTEGER;
+startFrac NUMERIC;
+stopFrac NUMERIC;
+tempTime NUMERIC;
 BEGIN
-
-    SELECT INTO n ST_Npoints(linezm);
-
-    FOR i in 1..n LOOP
-	    r.sid=i;
-	    temp = ST_M(ST_PointN(linezm,i));
-	   
-	    r.linezm = ST_LineSubstring(linezm, 1.0*(i-1)/4, 1.0*i/4);
-	    r.mean_line_time = session_timestart;
-	    return next r;
 	
-    END LOOP;
-    
+	SELECT INTO n ST_Npoints(linezm);
+	
+
+	i := 2;
+	counter := 1;
+	nStop := 1;
+	lastTimestamp := ST_M(ST_PointN(linezm,1));
+	nStart := 1;
+	timeSum := lastTimestamp;
+	threshold := 3600*600;
+	
+	WHILE i <= n LOOP -- While the linezm has not been read to end - do the following
+		tempTime = ST_M(ST_PointN(linezm,i));
+		 
+		IF i = n THEN
+			
+			counter = counter + 1;
+			timeSum = timeSum + tempTime;				
+			nStop = i;	
+			avgTime = timeSum / counter;	
+			r.id = i;
+			r.sid = segment_id;
+			r.segmenttime = to_timestamp(avgTime);
+
+			startFrac = ST_Line_Locate_Point(linezm,ST_PointN(linezm,nStart));
+			stopFrac = ST_Line_Locate_Point(linezm,ST_PointN(linezm,nStop));
+			
+			r.segment_linezm = ST_LineSubString(linezm, startFrac, stopFrac);
+			return next r;
+			RETURN;
+
+		ELSE 
+
+			IF abs(lastTimestamp - tempTime) < threshold THEN -- If the timedifference is not bigger than threshold
+				counter = counter + 1;
+				timeSum = timeSum + tempTime;				
+				nStop = i;													
+				i = i + 1;			
+				
+			ELSE 	-- The time difference was too big. Breaking off and returning the segment...
+				avgTime = timeSum / counter;
+				nStop = i;
+					
+				r.id = i;
+				r.sid = segment_id;
+				r.segmenttime = to_timestamp(avgTime);
+				
+				startFrac = ST_Line_Locate_Point(linezm,ST_PointN(linezm,nStart));
+				stopFrac = ST_Line_Locate_Point(linezm,ST_PointN(linezm,nStop));
+				
+				r.segment_linezm = ST_LineSubString(linezm, startFrac, stopFrac);
+			
+				return next r;
+				
+				-- Initializing next round
+				nStart = i;
+				lastTimestamp = tempTime;
+				timeSum = lastTimestamp;
+				counter = 1;
+			
+			END IF;
+		
+		
+		END IF;
+			
+	END LOOP;
+	
     RETURN;
 	
 END;
@@ -212,102 +292,6 @@ $$ LANGUAGE plpgsql;
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
-
-CREATE OR REPLACE FUNCTION LS_SplitUpTimeSegments(linezm GEOMETRY, session_timestart TIMESTAMP) RETURNS SETOF subsegment_holder AS $$
-
-DECLARE 
-r subsegment_holder%ROWTYPE;
-n INTEGER;
-temp NUMERIC;
-
-tempstart INTEGER;
-tempstop INTEGER;
-
-splits INTEGER; 
-
-totallength NUMERIC; 
-updatedportion NUMERIC;
-BEGIN
-
-	SELECT INTO totallength ST_3DLength(linezm);
-    SELECT INTO n ST_NPoints(linezm);
-	SELECT INTO updatedportion LS_UpdatedPortion(linezm);
-	SELECT INTO meantime LS_SegmentMeanM(linezm);
-	r.sid = i;
-	splits := 1;
-	r.id = 1;
-	
-	IF updatedportion > 0.9 THEN
-		r.mean_line_time = session_timestart + interval '1 seconds' * meantime;
-		r.linezm = linezm;
-		
-	ELSE IF totallength <= 300 AND updatedportion > 0.7 THEN
-		r.mean_line_time = session_timestart + interval '1 seconds' * meantime;
-		r.linezm = linezm;
-	ELSE IF totallength < 1000 AND totallength > 300 AND updatedportion > 0.8
-		r.mean_line_time = session_timestart + interval '1 seconds' * meantime;
-		r.linezm = linezm;
-	ELSE 
-	
-	
-	
-	
-		FOR i in 1..n LOOP
-			
-			
-			r.sid=i;
-			temp = ST_M(ST_PointN(linezm,i));
-		   
-			r.linezm = ST_LineSubstring(linezm, 1.0*(i-1)/4, 1.0*i/4);
-			r.mean_line_time = session_timestart;
-			return next r;
-		
-		END LOOP;
-    END IF;
-	
-	
-    RETURN;
-	
-END;
-
-$$ LANGUAGE plpgsql;
-
-
-
-----------------------------------------------------------------------------------------------------------------------------------------------------------
---
---
---
---
---
---
-----------------------------------------------------------------------------------------------------------------------------------------------------------
-
-DROP FUNCTION LS_SplitInFourLinestring(linezm GEOMETRY);
-CREATE OR REPLACE FUNCTION LS_SplitLinestring(linezm GEOMETRY) RETURNS SETOF geometry AS $$
-
-DECLARE 
-r testholder%ROWTYPE;
-
-
-BEGIN
-
-    FOR i in 1..4 LOOP
-	    r.sid=i;
-	    r.linezm = ST_LineSubstring(linezm, 1.0*(i-1)/4, 1.0*i/4);
-	
-	    return next r.linezm;
-	
-    END LOOP;
-    
-    RETURN;
-	
-END;
-
-$$ LANGUAGE plpgsql;
-
-
-
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 --
 --
@@ -324,16 +308,14 @@ DECLARE
 
 n INTEGER;
 timesum NUMERIC;
-line GEOMETRY;
 
 BEGIN
 
     SELECT INTO n ST_NPoints(linezm);
     timesum := 0;
-	SELECT INTO line ST_Force4D(linezm);
     FOR i in 1..n LOOP
 		
-    	timesum := timesum + ST_M(ST_PointN(line,i));
+    	timesum := timesum + ST_M(ST_Force4D(ST_PointN(line,i)));
     	
     END LOOP;
 
@@ -419,150 +401,6 @@ $$ LANGUAGE plpgsql;
 
 
 
-
-
-----------------------------------------------------------------------------------------------------------------------------------------------------------
---
---
---
---
---
---
-----------------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-
-CREATE OR REPLACE FUNCTION LS_SplitUpTimeSegments(linezm GEOMETRY, session_timestart TIMESTAMP) RETURNS SETOF subsegment_holder AS $$
-
-DECLARE 
-r subsegment_holder%ROWTYPE;
-n INTEGER;
-i INTEGER;
-
-temptime NUMERIC;
-zerotime NUMERIC; 
-sumseconds NUMERIC; 
-
-tempstart INTEGER;
-tempstop INTEGER;
-
-splits INTEGER; 
-errors INTEGER;
-
-line GEOMETRY;
-totallength NUMERIC; 
-updatedportion NUMERIC;
-meantime NUMERIC; 
-
-BEGIN
-	SELECT INTO line ST_Force4D(linezm);
-	SELECT INTO totallength ST_3DLength(line);
-	SELECT INTO n ST_NPoints(line);
-	SELECT INTO updatedportion LS_UpdatedPortion(line);
-	SELECT INTO meantime LS_SegmentMeanTime(line);
-	
-	splits := 1;
-	r.id = 1;
-
-	
-	IF updatedportion > 0.9 THEN
-		r.mean_line_time = session_timestart + interval '1 seconds' * meantime;
-		r.linezm = line;
-		return next r;
-		RETURN;
-		
-	ELSIF updatedportion > 0.7 AND totallength <= 300 THEN
-		r.mean_line_time = session_timestart + interval '1 seconds' * meantime;
-		r.linezm = line;
-		return next r;
-		RETURN;
-		
-	ELSIF updatedportion > 0.8 AND totallength < 1000 AND totallength > 300 THEN 
-		r.mean_line_time = session_timestart + interval '1 seconds' * meantime;
-		r.linezm = line;
-		return next r;
-		RETURN;
-	
-	ELSE 
-				
-		tempstart := 1;
-		tempstop := 1;
-		temptime := ST_M(ST_PointN(line,1));
-		zerotime := 0;
-		sumseconds := 0;
-
-		i := 1;
-
-		-- Find the new zero time to solve for --
-
-		-- LOOP through points until ok --
-		
-		WHILE i <= n LOOP
-
-			temptime = ST_M(ST_PointN(line,i));
-
-
-
-			IF temptime>zerotime-(6*3600) AND temptime<zerotime+(6*3600) THEN
-
-				sumseconds = sumseconds + temptime;
-				tempstop = i;
-				RAISE NOTICE 'inside: i: %: %', i, temptime;
-
-			ELSE 
-
-				RAISE NOTICE 'outside: i: %: %', i, temptime;
-
-				IF errors <= 1 THEN
-					
-					RAISE NOTICE 'increasing errors';
-					errors = errors + 1;
-					tempstop = i;
-					sumseconds = sumseconds + sumseconds/(tempstop-tempstart);
-				
-					
-				ELSE 
-			
-					RAISE NOTICE 'should pop out linestring: i: %: %', i, temptime;
-					r.linezm = ST_LineSubstring(line, 1.0*(tempstart-1)/n, 1.0*(tempstop)/n);
-					r.sid=i;
-					r.mean_line_time = session_timestart + interval '1 seconds' * 1.0*sumseconds/(tempstop-tempstart);
-
-					-- Set new stop and start, sumseconds etc.
-					sumseconds = 0;
-					errors = 0;
-					tempstart = i;
-					tempstop = i;
-					zerotime = ST_M(ST_PointN(line,tempstart));
-					
-					return next r;
-				END IF;
-
-			END IF; 
-
-			IF tempstop = n THEN
-					RAISE NOTICE 'should pop out linestring: i: %: % with zerotime: %', i, temptime, zerotime;
-				r.linezm = ST_LineSubstring(line, 1.0*(tempstart-1)/n, 1.0*(tempstop)/n);
-				r.sid=i;
-				r.mean_line_time = session_timestart + interval '1 seconds' * 1.0*sumseconds/(tempstop-tempstart);
-					return next r;
-
-			END IF;
-
-				i = i + 1;
-		
-		END LOOP;
-
-	
-	END IF;
-	
-    RETURN;
-	
-END;
-
-$$ LANGUAGE plpgsql;
-
-
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 --
 --
@@ -614,13 +452,6 @@ BEGIN
 	
 	SELECT INTO mostRecentUpdate ST_M(ST_PointN(line,nLastUpdate));
 
-
-	--RAISE NOTICE 'insertedtime = %', insertedTime;
-
-	--RAISE NOTICE 'last update = %', mostRecentUpdate;
-
-
-	--RAISE NOTICE 'timediff = %', insertedTime - mostRecentUpdate;
 	
 	IF insertedTime - mostRecentUpdate < 21600 THEN 
 		
@@ -628,8 +459,6 @@ BEGIN
 		
 		UPDATE temporalsegment SET segment = line where id = segment_id;
 		
-		--RAISE NOTICE 'updated the temporalsegment table for id %', segment_id;
-				
 	ELSE 
 		
 		WITH oldsegment AS (SELECT * FROM temporalsegment WHERE id = segment_id)
@@ -639,8 +468,6 @@ BEGIN
 		line := LS_UpdateTimelineAtPoint(line, insertedPoint, bufferSize, insertedTime);
 	
 		UPDATE temporalsegment SET created = now(), segment = line WHERE id=segment_id;
-		
-		--RAISE NOTICE 'created new temporalsegment_history insert and started a new temporalsegment update for id %', segment_id;
 		
 	END IF;
 	
@@ -829,13 +656,14 @@ DECLARE
 rec RECORD;
 timevalue NUMERIC;
 
+    
     BEGIN  
 		
 		IF (TG_OP = 'INSERT') THEN
 			
-			FOR rec IN SELECT * from temporalsegment WHERE ST_DWithin(ST_Transform(NEW.position,32632), segment, 25) LOOP
+			FOR rec IN SELECT * from temporalsegment WHERE ST_DWithin(ST_Transform(NEW.position,32632), segment, 253424) LOOP
 				SELECT INTO timevalue EXTRACT(EPOCH FROM NEW.insertedtime);
-				PERFORM LS_UpdateTimeline(rec.id, timevalue, NEW.position, 20);
+				PERFORM LS_UpdateTimeline(rec.id, 	timevalue, NEW.position, 20);
 
 			END LOOP;
 
@@ -853,4 +681,44 @@ CREATE TRIGGER rawpositiondata
 AFTER INSERT ON rawpositiondata
     FOR EACH ROW EXECUTE PROCEDURE process_position_insert();
 
+	
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+--
+--
+--
+--
+--
+--
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+DROP TRIGGER temporalsegment_trigger on temporalsegment;
+CREATE OR REPLACE FUNCTION process_segment_insert() RETURNS TRIGGER AS $temporalsegment_trigger$
+
+DECLARE 
+rec RECORD;
+timevalue NUMERIC;
+sid INTEGER;
+
+    BEGIN  
+		
+			INSERT INTO prebuild(change, explanation) values (now(),TG_OP);
+		IF (TG_OP = 'INSERT') THEN
+			
+			sid = NEW.id;
+			
+			DELETE FROM prebuild_temporalsegment where segment_id = sid;
+			RAISE NOTICE 'trigger on temporalsegment called %', NEW.segment;
+			INSERT INTO prebuild_temporalsegment(segment_id, segmentnumber, segment, segmenttime) SELECT (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).sid, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).id, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm,  now();
+				
+			RETURN NEW;
+		END IF;
+		
+		RETURN NULL;
+    END;
+    
+$temporalsegment_trigger$ LANGUAGE plpgsql;
+
+CREATE TRIGGER temporalsegment_trigger
+AFTER UPDATE OR INSERT OR DELETE ON temporalsegment
+    FOR EACH ROW EXECUTE PROCEDURE process_segment_insert();
 	
