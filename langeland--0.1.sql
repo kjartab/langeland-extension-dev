@@ -56,6 +56,7 @@ $$ LANGUAGE plpgsql;
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
+
 CREATE OR REPLACE FUNCTION LS_BuildTimeline(linezm GEOMETRY, insertedTime TIMESTAMP WITH TIME ZONE) RETURNS geometry AS $$
 
 DECLARE 
@@ -63,17 +64,18 @@ DECLARE
 line GEOMETRY;
 tempPoint GEOMETRY;
 n INTEGER;
+timeMillis numeric;	
 
 BEGIN
 
     SELECT INTO line ST_Force4D(linezm);
-	INSERT INTO timeMillis EXTRACT(EPOCH FROM insertedTime);
+	SELECT INTO timeMillis EXTRACT(EPOCH FROM insertedTime);
 	SELECT INTO n ST_NPoints(linezm);
 	
     FOR i in 1..n LOOP
 		
     	tempPoint := ST_PointN(line,i);
-		
+    	
 		SELECT INTO line ST_SetPoint(line,i-1,ST_SetSRID(ST_MakePoint(ST_X(tempPoint),ST_Y(tempPoint),ST_Z(tempPoint),timeMillis),ST_SRID(linezm)));
 	
     END LOOP;
@@ -83,7 +85,6 @@ BEGIN
 END;
 
 $$ LANGUAGE plpgsql;
-
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 --
 --
@@ -662,7 +663,7 @@ timevalue NUMERIC;
 		IF (TG_OP = 'INSERT') THEN
 			
 			FOR rec IN SELECT * from temporalsegment WHERE ST_DWithin(ST_Transform(NEW.position,32632), segment, 253424) LOOP
-				SELECT INTO timevalue EXTRACT(EPOCH FROM NEW.insertedtime);
+				SELECT INTO timevalue EXTRACT(EPOCH FROM NEW.insertedtime -3600) ;
 				PERFORM LS_UpdateTimeline(rec.id, 	timevalue, NEW.position, 20);
 
 			END LOOP;
@@ -691,6 +692,8 @@ AFTER INSERT ON rawpositiondata
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
+
+
 DROP TRIGGER temporalsegment_trigger on temporalsegment;
 CREATE OR REPLACE FUNCTION process_segment_insert() RETURNS TRIGGER AS $temporalsegment_trigger$
 
@@ -708,7 +711,7 @@ sid INTEGER;
 			
 			DELETE FROM prebuild_temporalsegment where segment_id = sid;
 			RAISE NOTICE 'trigger on temporalsegment called %', NEW.segment;
-			INSERT INTO prebuild_temporalsegment(segment_id, segmentnumber, segment, segmenttime) SELECT (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).sid, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).id, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm,  now();
+			INSERT INTO prebuild_temporalsegment(segment_id, segmentnumber, segment, segmenttime) SELECT (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).sid, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).id, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm,  to_timestampLS_LargestM((LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm);
 				
 			RETURN NEW;
 		END IF;
