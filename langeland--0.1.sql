@@ -1,5 +1,5 @@
 --
--- Langeland extension version 0.1 - Development 
+-- Langeland extension version 0.2 - Development 
 --
 -- The Langeland extension is simply a set of functions that aids in treating linestrings as spatiotemporal objects. 
 -- The fourth dimension, M, stores the timestamp as a unix time (seconds)
@@ -650,8 +650,13 @@ $$ LANGUAGE plpgsql;
 --
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
-DROP TRIGGER rawpositiondata on rawpositiondata;
-CREATE OR REPLACE FUNCTION process_position_insert() RETURNS TRIGGER AS $rawpositiondata$
+-- Function: public.process_position_insert()
+
+-- DROP FUNCTION public.process_position_insert();
+
+CREATE OR REPLACE FUNCTION public.process_position_insert()
+  RETURNS trigger AS
+$BODY$
 
 DECLARE 
 rec RECORD;
@@ -662,9 +667,9 @@ timevalue NUMERIC;
 		
 		IF (TG_OP = 'INSERT') THEN
 			
-			FOR rec IN SELECT * from temporalsegment WHERE ST_DWithin(ST_Transform(NEW.position,32632), segment, 253424) LOOP
-				SELECT INTO timevalue EXTRACT(EPOCH FROM NEW.insertedtime -3600) ;
-				PERFORM LS_UpdateTimeline(rec.id, 	timevalue, NEW.position, 20);
+			FOR rec IN SELECT * from temporalsegment WHERE ST_DWithin(ST_Transform(NEW.position,32632), segment, 20000) LOOP
+				SELECT INTO timevalue EXTRACT(EPOCH FROM NEW.insertedtime)-3600;
+				PERFORM LS_UpdateTimeline(rec.id, timevalue,ST_Transform(NEW.position,32632), 20);
 
 			END LOOP;
 
@@ -676,13 +681,12 @@ timevalue NUMERIC;
 		RETURN NULL;
     END;
     
-$rawpositiondata$ LANGUAGE plpgsql;
+$BODY$
+  LANGUAGE plpgsql VOLATILE
+  COST 100;
+ALTER FUNCTION public.process_position_insert()
+  OWNER TO postgres;
 
-CREATE TRIGGER rawpositiondata
-AFTER INSERT ON rawpositiondata
-    FOR EACH ROW EXECUTE PROCEDURE process_position_insert();
-
-	
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 --
 --
