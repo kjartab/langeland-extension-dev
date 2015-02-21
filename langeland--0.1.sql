@@ -70,6 +70,8 @@ BEGIN
 
     SELECT INTO line ST_Force4D(linezm);
 	SELECT INTO timeMillis EXTRACT(EPOCH FROM insertedTime);
+    
+    RAISE NOTICE ' % = % ', timeMillis, insertedTime;
 	SELECT INTO n ST_NPoints(linezm);
 	
     FOR i in 1..n LOOP
@@ -188,7 +190,7 @@ $$ LANGUAGE plpgsql;
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 -- LS_SplitTimeline
 
-DROP TYPE SEGMENTHOLDER;
+DROP TYPE SEGMENTHOLDER CASCADE;
 CREATE TYPE SEGMENTHOLDER AS (id INTEGER, sid INTEGER, segmenttime TIMESTAMP, segment_linezm GEOMETRY);
 
 CREATE OR REPLACE FUNCTION LS_SplitTimeline(segment_id INTEGER, linezm GEOMETRY) RETURNS SETOF SEGMENTHOLDER AS $$
@@ -211,14 +213,14 @@ BEGIN
 	
 	SELECT INTO n ST_Npoints(linezm);
 	
-
 	i := 2;
 	counter := 1;
 	nStop := 1;
 	lastTimestamp := ST_M(ST_PointN(linezm,1));
 	nStart := 1;
+    nStop :=2;
 	timeSum := lastTimestamp;
-	threshold := 3600*600;
+	threshold := 180;
 	
 	WHILE i <= n LOOP -- While the linezm has not been read to end - do the following
 		tempTime = ST_M(ST_PointN(linezm,i));
@@ -236,22 +238,25 @@ BEGIN
 			startFrac = ST_Line_Locate_Point(linezm,ST_PointN(linezm,nStart));
 			stopFrac = ST_Line_Locate_Point(linezm,ST_PointN(linezm,nStop));
 			
-			r.segment_linezm = ST_LineSubString(linezm, startFrac, stopFrac);
+			r.segment_linezm = ST_LineSubString(linezm, startFrac,1);
 			return next r;
 			RETURN;
 
 		ELSE 
 
 			IF abs(lastTimestamp - tempTime) < threshold THEN -- If the timedifference is not bigger than threshold
+              --  RAISE NOTICE 'lasttimestamp - temptime > threshold: % - % = % < %', lastTimestamp, tempTime, abs(lastTimestamp - tempTime), threshold;
 				counter = counter + 1;
-				timeSum = timeSum + tempTime;				
+				timeSum = timeSum + tempTime;		
+                lastTimestamp = tempTime;                
 				nStop = i;													
-				i = i + 1;			
+				i = i + 1;
+				
 				
 			ELSE 	-- The time difference was too big. Breaking off and returning the segment...
+				--RAISE NOTICE 'lasttimestamp - temptime < threshold: % - % = % < %', lastTimestamp, tempTime, abs(lastTimestamp - tempTime), threshold;
 				avgTime = timeSum / counter;
-				nStop = i;
-					
+                
 				r.id = i;
 				r.sid = segment_id;
 				r.segmenttime = to_timestamp(avgTime);
@@ -389,10 +394,10 @@ BEGIN
     FOR i in 1..ST_NPoints(linezm) LOOP
 	temp_m := ST_M(ST_PointN(linezm,i));
 	
-	IF max_m < temp_m THEN
-		max_m := temp_m;
-	END IF;
-	
+		IF max_m < temp_m THEN
+			max_m := temp_m;
+		END IF;
+		
     END LOOP;
     
     RETURN max_m;
@@ -454,10 +459,9 @@ BEGIN
 	SELECT INTO mostRecentUpdate ST_M(ST_PointN(line,nLastUpdate));
 
 	
-	IF insertedTime - mostRecentUpdate < 21600 THEN 
-		
+	IF insertedTime - mostRecentUpdate < 1200 THEN 
 		line := LS_UpdateRecent(line, insertedTime, insertedPoint, bufferSize);
-		
+        
 		UPDATE temporalsegment SET segment = line where id = segment_id;
 		
 	ELSE 
@@ -513,10 +517,10 @@ BEGIN
 		line := LS_UpdateTimelineAtPoint(linezm, insertedPoint, bufferSize, insertedTime); -- No matter what, the line will be updated at inserted point
 		
 		nInserted := LS_NForMostRecent(line); -- n of the inserted point
-		
+		reversed := 0;
 	
-		IF insertedTime - mostRecentUpdate < 300 AND nInserted != nLastUpdate THEN -- If the timeline was updated  less than 5 minutes ago, it will be updated as if the points between were all visited
-		
+		IF insertedTime - mostRecentUpdate < 240 AND nInserted != nLastUpdate THEN -- If the timeline was updated  less than 5 minutes ago, it will be updated as if the points between were all visited
+			RAISE NOTICE 'within';
 			IF nInserted < nLastUpdate THEN
 				reversed := 1;
 			END IF;
@@ -667,9 +671,9 @@ timevalue NUMERIC;
 		
 		IF (TG_OP = 'INSERT') THEN
 			
-			FOR rec IN SELECT * from temporalsegment WHERE ST_DWithin(ST_Transform(NEW.position,32632), segment, 20000) LOOP
+			FOR rec IN SELECT * from temporalsegment WHERE ST_DWithin(ST_Transform(NEW.position,32632), segment, 70) LOOP
 				SELECT INTO timevalue EXTRACT(EPOCH FROM NEW.insertedtime)-3600;
-				PERFORM LS_UpdateTimeline(rec.id, timevalue,ST_Transform(NEW.position,32632), 20);
+				PERFORM LS_UpdateTimeline(rec.id, timevalue, ST_Transform(NEW.position,32632), 20);
 
 			END LOOP;
 
@@ -708,14 +712,14 @@ sid INTEGER;
 
     BEGIN  
 		
-			INSERT INTO prebuild(change, explanation) values (now(),TG_OP);
-		IF (TG_OP = 'INSERT') THEN
+		INSERT INTO prebuild(change, explanation) values (now(),TG_OP);
+		IF (TG_OP = 'INSERT' OR TG_OP = 'UPDATE') THEN
 			
 			sid = NEW.id;
 			
 			DELETE FROM prebuild_temporalsegment where segment_id = sid;
-			RAISE NOTICE 'trigger on temporalsegment called %', NEW.segment;
-			INSERT INTO prebuild_temporalsegment(segment_id, segmentnumber, segment, segmenttime) SELECT (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).sid, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).id, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm,  to_timestampLS_LargestM((LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm);
+			
+			INSERT INTO prebuild_temporalsegment(segment_id, segmentnumber, segment, segmenttime) SELECT (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).sid, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).id, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm,  to_timestamp(LS_LargestM((LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm));
 				
 			RETURN NEW;
 		END IF;
