@@ -220,7 +220,7 @@ BEGIN
 	nStart := 1;
     nStop :=2;
 	timeSum := lastTimestamp;
-	threshold := 180;
+	threshold := 240;
 	
 	WHILE i <= n LOOP -- While the linezm has not been read to end - do the following
 		tempTime = ST_M(ST_PointN(linezm,i));
@@ -248,9 +248,9 @@ BEGIN
               --  RAISE NOTICE 'lasttimestamp - temptime > threshold: % - % = % < %', lastTimestamp, tempTime, abs(lastTimestamp - tempTime), threshold;
 				counter = counter + 1;
 				timeSum = timeSum + tempTime;		
-                lastTimestamp = tempTime;                
-				nStop = i;													
-				i = i + 1;
+				lastTimestamp = tempTime;       											
+				i = i + 1;         
+				nStop = i;		
 				
 				
 			ELSE 	-- The time difference was too big. Breaking off and returning the segment...
@@ -265,7 +265,7 @@ BEGIN
 				stopFrac = ST_Line_Locate_Point(linezm,ST_PointN(linezm,nStop));
 				
 				r.segment_linezm = ST_LineSubString(linezm, startFrac, stopFrac);
-			
+				
 				return next r;
 				
 				-- Initializing next round
@@ -286,6 +286,7 @@ BEGIN
 END;
 
 $$ LANGUAGE plpgsql;
+
 
 
 
