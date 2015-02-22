@@ -720,7 +720,7 @@ sid INTEGER;
 			
 			DELETE FROM prebuild_temporalsegment where segment_id = sid;
 			
-			INSERT INTO prebuild_temporalsegment(segment_id, segmentnumber, segment, segmenttime) SELECT (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).sid, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).id, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm,  to_timestamp(LS_LargestM((LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm));
+			INSERT INTO prebuild_temporalsegment(segment_id, segmentnumber, segment, segmenttime) SELECT (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).sid, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).id, (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segment_linezm,  (LS_SplitTimeline(NEW.id, NEW.segment)::SEGMENTHOLDER).segmenttime);
 				
 			RETURN NEW;
 		END IF;
